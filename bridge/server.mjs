@@ -22,7 +22,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
-import { readFileSync, realpathSync, existsSync } from 'node:fs'
+import { readFileSync, realpathSync, existsSync, writeFileSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
@@ -106,6 +106,35 @@ const ALLOW_NO_ORIGIN = process.env.JARVIS_ALLOW_NO_ORIGIN === '1'
  * one thing the check exists to prevent.
  */
 const ALLOW_ANY_ORIGIN = process.env.JARVIS_ALLOW_ANY_ORIGIN === '1'
+
+/**
+ * A simple gate for sharing a hosted link with someone specific, since
+ * JARVIS_ALLOW_ANY_ORIGIN means anyone who has the URL at all can use it.
+ * Deliberately just HTTP Basic Auth rather than a real login page: the
+ * browser handles the prompt natively, on first visit, and remembers it for
+ * the rest of the session — nothing to build on the frontend at all. Only
+ * the password is actually checked; the username field can be anything.
+ * Unset entirely (the default), this is a no-op — every request is let
+ * through exactly as before, which is what keeps this safe to ship to
+ * everyone including people running the bridge locally with no such need.
+ */
+const DEMO_PASSWORD = process.env.JARVIS_DEMO_PASSWORD || null
+
+function passwordOk(req) {
+  if (!DEMO_PASSWORD) return true
+  const header = req.headers.authorization ?? ''
+  const [scheme, encoded] = header.split(' ')
+  if (scheme !== 'Basic' || !encoded) return false
+  let decoded = ''
+  try {
+    decoded = Buffer.from(encoded, 'base64').toString('utf8')
+  } catch {
+    return false
+  }
+  const sep = decoded.indexOf(':')
+  const pass = sep === -1 ? decoded : decoded.slice(sep + 1)
+  return pass === DEMO_PASSWORD
+}
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
 
@@ -203,6 +232,73 @@ const WRITE_BUILTINS = new Set([
  * one, sent from the init message a turn later, carries live status. Expect
  * the two to differ, and treat the later one as authoritative.
  */
+/**
+ * Fills in ~/.claude.json's mcpServers from environment variables, for a
+ * machine that never ran `claude mcp add` — which is every hosted deployment
+ * of this bridge. Locally, that command already wrote everything this
+ * function would write, so it's designed to never fight it: it only adds a
+ * server whose name isn't already present, and it does nothing at all for a
+ * server whose corresponding environment variables aren't set. On your own
+ * PC, none of the variable names below are set as shell environment
+ * variables — google-workspace's credentials live inside the JSON already,
+ * baked in by `claude mcp add --env` — so this quietly no-ops there and only
+ * actually does anything on a host like Railway, where these are set as
+ * platform environment variables instead.
+ */
+function provisionMcpFromEnv() {
+  const path = join(homedir(), '.claude.json')
+  let cfg = {}
+  try {
+    cfg = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    cfg = {} // no file yet — a fresh container, most likely
+  }
+  cfg.mcpServers = cfg.mcpServers ?? {}
+  let changed = false
+
+  if (
+    !cfg.mcpServers['google-workspace'] &&
+    process.env.GOOGLE_OAUTH_CLIENT_ID &&
+    process.env.GOOGLE_OAUTH_CLIENT_SECRET
+  ) {
+    cfg.mcpServers['google-workspace'] = {
+      command: 'uvx',
+      args: ['workspace-mcp', '--tools', 'gmail', 'calendar', 'drive'],
+      env: {
+        GOOGLE_OAUTH_CLIENT_ID: process.env.GOOGLE_OAUTH_CLIENT_ID,
+        GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+      },
+    }
+    changed = true
+  }
+
+  if (
+    !cfg.mcpServers['ghl'] &&
+    process.env.GHL_API_KEY &&
+    process.env.GHL_LOCATION_ID
+  ) {
+    cfg.mcpServers['ghl'] = {
+      command: 'npx',
+      args: ['-y', '@northrosetech/ghl-mcp-server'],
+      env: {
+        GHL_API_KEY: process.env.GHL_API_KEY,
+        GHL_LOCATION_ID: process.env.GHL_LOCATION_ID,
+      },
+    }
+    changed = true
+  }
+
+  if (changed) {
+    try {
+      writeFileSync(path, JSON.stringify(cfg, null, 2))
+      console.log('[jarvis] provisioned MCP servers from environment variables')
+    } catch (err) {
+      console.warn('[jarvis] could not write MCP config:', err.message)
+    }
+  }
+}
+provisionMcpFromEnv()
+
 function configuredServers() {
   try {
     const cfg = JSON.parse(
@@ -748,6 +844,14 @@ const handleRequest = async (req, res) => {
   }
   const cors = corsFor(req)
 
+  if (req.method !== 'OPTIONS' && !passwordOk(req)) {
+    res.writeHead(401, {
+      ...cors,
+      'www-authenticate': 'Basic realm="JARVIS", charset="UTF-8"',
+    })
+    return res.end('Authentication required')
+  }
+
   if (req.method === 'OPTIONS') {
     res.writeHead(204, cors)
     return res.end()
@@ -1094,6 +1198,10 @@ const wss = new WebSocketServer({
     if (path !== '/' && path !== '/ws') {
       console.warn(`[jarvis] rejected websocket on path ${path}`)
       return done(false, 403, 'Forbidden')
+    }
+    if (!passwordOk(req)) {
+      console.warn('[jarvis] rejected websocket — missing or wrong password')
+      return done(false, 401, 'Unauthorized')
     }
     if (!originAllowed(origin)) {
       console.warn(
