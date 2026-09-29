@@ -70,8 +70,25 @@ export const BACKEND: 'bridge' | 'direct' = choice(
  * places that talk to it, so moving off the default port is a single edit.
  * `wss://` maps to `https://` on its own, which is why this is a prefix swap
  * rather than a hardcoded scheme.
+ *
+ * Default is same-origin (`/ws`, on whatever host the page itself was loaded
+ * from) rather than a hardcoded `ws://localhost:8787`. On your own machine
+ * that resolves to the dev server's own origin, and the proxy entry in
+ * vite.config.ts forwards it on to the real bridge on 8787 — so nothing
+ * changes for local use. The difference shows up the moment this is opened
+ * through a tunnel (ngrok, Cloudflare) for someone else to test: a hardcoded
+ * localhost:8787 would send every browser that opens the link looking for a
+ * bridge on *their own* machine, which does not exist. Same-origin means the
+ * link works for whoever opens it, from wherever they are.
  */
-export const BRIDGE_WS_URL = str(import.meta.env.VITE_BRIDGE_URL) ?? 'ws://localhost:8787'
+const sameOriginBridge = () => {
+  if (typeof window === 'undefined') return 'ws://localhost:8787'
+  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${scheme}//${window.location.host}/ws`
+}
+
+export const BRIDGE_WS_URL =
+  str(import.meta.env.VITE_BRIDGE_URL) ?? sameOriginBridge()
 export const BRIDGE_HTTP_URL = BRIDGE_WS_URL.replace(/^ws/, 'http')
 
 /**
