@@ -197,7 +197,12 @@ export function Scene() {
     <Canvas
       id="jarvis-reactor"
       className="scene"
-      style={{ touchAction: 'none' }}
+      style={{
+        touchAction: 'none',
+        WebkitUserSelect: 'none',
+        userSelect: 'none',
+        WebkitTouchCallout: 'none',
+      }}
       camera={{ position: [0, 0, 6.2], fov: 45 }}
       gl={{ antialias: true, alpha: true }}
       dpr={[1, 2]}

@@ -789,12 +789,23 @@ export default function App() {
       beginPTT()
     }
     const onPointerUp = () => endPTT()
+    // Android's long-press context menu is the same failure mode as iOS's
+    // text-selection callout: a touch that was captured as PTT gets
+    // interrupted by the OS popping up a menu over it. Suppressed only on the
+    // reactor itself, so right-click elsewhere on the page still works.
+    const onContextMenu = (e: MouseEvent) => {
+      const el = e.target as HTMLElement
+      if (el.tagName === 'CANVAS' || el.closest('#jarvis-reactor')) {
+        e.preventDefault()
+      }
+    }
     window.addEventListener('pointerdown', onPointerDown)
     window.addEventListener('pointerup', onPointerUp)
     // A finger dragged off the element, or the OS interrupting the touch
     // (an incoming call, switching apps) — either way, stop listening rather
     // than leaving the mic captured with no way to release it.
     window.addEventListener('pointercancel', onPointerUp)
+    window.addEventListener('contextmenu', onContextMenu)
 
     return () => {
       cancelAnimationFrame(raf)
@@ -803,6 +814,7 @@ export default function App() {
       window.removeEventListener('pointerdown', onPointerDown)
       window.removeEventListener('pointerup', onPointerUp)
       window.removeEventListener('pointercancel', onPointerUp)
+      window.removeEventListener('contextmenu', onContextMenu)
       if (pttGrace.current) clearTimeout(pttGrace.current)
       clearIdle()
       if (voicePoll.current) clearInterval(voicePoll.current)
