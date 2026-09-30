@@ -195,7 +195,9 @@ function Rig() {
 export function Scene() {
   return (
     <Canvas
+      id="jarvis-reactor"
       className="scene"
+      style={{ touchAction: 'none' }}
       camera={{ position: [0, 0, 6.2], fov: 45 }}
       gl={{ antialias: true, alpha: true }}
       dpr={[1, 2]}

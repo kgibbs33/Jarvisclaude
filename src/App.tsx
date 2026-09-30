@@ -618,6 +618,38 @@ export default function App() {
     }
     pump()
 
+    // Shared by both Space and press-and-hold-on-the-reactor: the actual
+    // start/stop of a push-to-talk capture. Kept in one place so a phone's
+    // finger and a keyboard's Space bar are guaranteed to behave identically
+    // rather than two implementations quietly drifting apart.
+    const beginPTT = () => {
+      if (muted.current) return
+      const phase = store.getState().phase
+      if (phase === 'offline') {
+        void powerOn()
+        return
+      }
+      if (phase === 'boot') return // the boot sequence owns the phase until it finishes
+      if (phase === 'thinking' || phase === 'tooling' || phase === 'speaking') {
+        onSpeechStart()
+        listen(AWAIT_SPEECH_MS)
+      } else {
+        armPTT()
+      }
+      if (pttGrace.current) clearTimeout(pttGrace.current)
+      pttHeld.current = true
+      voice.current?.pttStart?.()
+    }
+    const endPTT = () => {
+      voice.current?.pttEnd?.()
+      // Don't drop the gate immediately — the transcript for what was just
+      // captured is still in flight and reads mode() again when it lands.
+      if (pttGrace.current) clearTimeout(pttGrace.current)
+      pttGrace.current = setTimeout(() => {
+        pttHeld.current = false
+      }, 2000)
+    }
+
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
@@ -730,47 +762,47 @@ export default function App() {
       // a missed wake word doesn't cost a take.
       if (e.code !== 'Space' || e.repeat) return
       e.preventDefault()
-      if (muted.current) return
-
-      const phase = store.getState().phase
-      if (phase === 'offline') {
-        void powerOn()
-      } else if (phase === 'boot') {
-        /* ignore — the boot sequence owns the phase until it finishes */
-      } else if (
-        phase === 'thinking' ||
-        phase === 'tooling' ||
-        phase === 'speaking'
-      ) {
-        onSpeechStart()
-        listen(AWAIT_SPEECH_MS)
-        if (pttGrace.current) clearTimeout(pttGrace.current)
-        pttHeld.current = true
-        voice.current?.pttStart?.()
-      } else {
-        armPTT()
-        if (pttGrace.current) clearTimeout(pttGrace.current)
-        pttHeld.current = true
-        voice.current?.pttStart?.()
-      }
+      beginPTT()
     }
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code !== 'Space') return
-      voice.current?.pttEnd?.()
-      // Don't drop the gate immediately — the transcript for what was just
-      // captured is still in flight and reads mode() again when it lands.
-      if (pttGrace.current) clearTimeout(pttGrace.current)
-      pttGrace.current = setTimeout(() => {
-        pttHeld.current = false
-      }, 2000)
+      endPTT()
     }
     window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onKeyUp)
+
+    // Press-and-hold on the reactor itself — the touch equivalent of holding
+    // Space, since a phone has no spacebar. Pointer events cover mouse,
+    // touch and pen with one listener rather than three, so holding the
+    // reactor down with a mouse works identically to a finger.
+    //
+    // Scoped to the reactor's own canvas rather than the whole window: the
+    // HUD has real buttons (INITIALISE, diagnostics, panel controls) that
+    // need their own taps to land as clicks, not get swallowed into a PTT
+    // session because a finger happened to come down somewhere on the page.
+    const onPointerDown = (e: PointerEvent) => {
+      const el = e.target as HTMLElement
+      if (el.closest('button, a, input, textarea, [role="button"]')) return
+      const onReactor = el.tagName === 'CANVAS' || el.closest('#jarvis-reactor')
+      if (!onReactor) return
+      e.preventDefault()
+      beginPTT()
+    }
+    const onPointerUp = () => endPTT()
+    window.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('pointerup', onPointerUp)
+    // A finger dragged off the element, or the OS interrupting the touch
+    // (an incoming call, switching apps) — either way, stop listening rather
+    // than leaving the mic captured with no way to release it.
+    window.addEventListener('pointercancel', onPointerUp)
 
     return () => {
       cancelAnimationFrame(raf)
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('pointercancel', onPointerUp)
       if (pttGrace.current) clearTimeout(pttGrace.current)
       clearIdle()
       if (voicePoll.current) clearInterval(voicePoll.current)

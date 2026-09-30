@@ -1,0 +1,11 @@
+# The bridge is a Node app, and Railway's builder (Nixpacks) sets up Node
+# on its own from package.json. But one of the MCP servers we launch —
+# google-workspace, via `uvx workspace-mcp` — is a Python package, and
+# nothing about a Node build tells Nixpacks a Python runtime is needed too.
+# Without this, uvx doesn't exist in the container at all, so that server
+# silently fails to start: the config is there, there's just nothing to run
+# it with. This adds Python and uv (which provides the `uvx` command) as
+# extra system packages in the same build image, alongside the Node one
+# Nixpacks already detects — nothing here overrides that autodetection.
+[phases.setup]
+nixPkgs = ["python312", "uv"]
